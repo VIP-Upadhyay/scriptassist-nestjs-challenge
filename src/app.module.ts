@@ -11,11 +11,18 @@ import { TaskProcessorModule } from './queues/task-processor/task-processor.modu
 import { ScheduledTasksModule } from './queues/scheduled-tasks/scheduled-tasks.module';
 import { CacheService } from './common/services/cache.service';
 
+// Import the config files
+import databaseConfig from './config/database.config';
+import jwtConfig from './config/jwt.config';
+import appConfig from './config/app.config';
+import bullConfig from './config/bull.config';
+
 @Module({
   imports: [
-    // Configuration
+    // Configuration - FIXED: Load all config files
     ConfigModule.forRoot({
       isGlobal: true,
+      load: [databaseConfig, jwtConfig, appConfig, bullConfig], // Add config files here
     }),
     
     // Database
@@ -82,4 +89,4 @@ import { CacheService } from './common/services/cache.service';
     CacheService
   ]
 })
-export class AppModule {} 
+export class AppModule {}
