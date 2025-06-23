@@ -1,6 +1,14 @@
-import { Column, CreateDateColumn, Entity, OneToMany, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  OneToMany,
+  CreateDateColumn,
+  UpdateDateColumn,
+  Index,
+} from 'typeorm';
 import { Task } from '../../tasks/entities/task.entity';
-import { Exclude } from 'class-transformer';
+import { RefreshToken } from '../../auth/entities/refresh-token.entity';
 
 @Entity('users')
 export class User {
@@ -8,24 +16,45 @@ export class User {
   id: string;
 
   @Column({ unique: true })
+  @Index()
   email: string;
 
   @Column()
   name: string;
 
   @Column()
-  @Exclude({ toPlainOnly: true })
   password: string;
 
   @Column({ default: 'user' })
   role: string;
 
-  @OneToMany(() => Task, (task) => task.user)
-  tasks: Task[];
+  @Column({ default: false })
+  isLocked: boolean;
 
-  @CreateDateColumn({ name: 'created_at' })
+  @Column({ nullable: true, type: 'timestamp' })
+  suspendedUntil?: Date;
+
+  @Column({ nullable: true, type: 'timestamp' })
+  lastLoginAt?: Date;
+
+  @Column({ nullable: true, length: 45 })
+  lastLoginIp?: string;
+
+  @Column({ default: 0 })
+  failedLoginAttempts: number;
+
+  @Column({ nullable: true, type: 'timestamp' })
+  lockedUntil?: Date;
+
+  @CreateDateColumn()
   createdAt: Date;
 
-  @UpdateDateColumn({ name: 'updated_at' })
+  @UpdateDateColumn()
   updatedAt: Date;
-} 
+
+  @OneToMany(() => Task, task => task.user)
+  tasks: Task[];
+
+  @OneToMany(() => RefreshToken, refreshToken => refreshToken.user)
+  refreshTokens: RefreshToken[];
+}
