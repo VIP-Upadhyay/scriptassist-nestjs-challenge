@@ -1,36 +1,60 @@
-import { IsDateString, IsEnum, IsNotEmpty, IsOptional, IsString, IsUUID } from 'class-validator';
-import { ApiProperty } from '@nestjs/swagger';
+import { IsNotEmpty, IsString, IsOptional, IsEnum, IsDateString, MaxLength, MinLength } from 'class-validator';
+import { Transform } from 'class-transformer';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { TaskStatus } from '../enums/task-status.enum';
 import { TaskPriority } from '../enums/task-priority.enum';
 
 export class CreateTaskDto {
-  @ApiProperty({ example: 'Complete project documentation' })
-  @IsString()
+  @ApiProperty({ 
+    description: 'Task title',
+    example: 'Complete project documentation',
+    minLength: 3,
+    maxLength: 200
+  })
   @IsNotEmpty()
+  @IsString()
+  @MinLength(3)
+  @MaxLength(200)
+  @Transform(({ value }) => value?.trim())
   title: string;
 
-  @ApiProperty({ example: 'Add details about API endpoints and data models', required: false })
-  @IsString()
+  @ApiPropertyOptional({ 
+    description: 'Task description',
+    example: 'Write comprehensive documentation for the API endpoints and data models',
+    maxLength: 1000
+  })
   @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  @Transform(({ value }) => value?.trim())
   description?: string;
 
-  @ApiProperty({ enum: TaskStatus, example: TaskStatus.PENDING, required: false })
+  @ApiPropertyOptional({ 
+    enum: TaskStatus, 
+    description: 'Initial task status',
+    default: TaskStatus.PENDING
+  })
+  @IsOptional()
   @IsEnum(TaskStatus)
-  @IsOptional()
-  status?: TaskStatus;
+  status?: TaskStatus = TaskStatus.PENDING;
 
-  @ApiProperty({ enum: TaskPriority, example: TaskPriority.MEDIUM, required: false })
+  @ApiPropertyOptional({ 
+    enum: TaskPriority, 
+    description: 'Task priority level',
+    default: TaskPriority.MEDIUM
+  })
+  @IsOptional()
   @IsEnum(TaskPriority)
-  @IsOptional()
-  priority?: TaskPriority;
+  priority?: TaskPriority = TaskPriority.MEDIUM;
 
-  @ApiProperty({ example: '2023-12-31T23:59:59Z', required: false })
-  @IsDateString()
+  @ApiPropertyOptional({ 
+    description: 'Task due date (ISO 8601 format)',
+    example: '2025-06-30T10:00:00.000Z'
+  })
   @IsOptional()
+  @IsDateString()
   dueDate?: Date;
 
-  @ApiProperty({ example: '123e4567-e89b-12d3-a456-426614174000' })
-  @IsUUID()
-  @IsNotEmpty()
-  userId: string;
-} 
+  // This will be set by the controller, not by the user
+  userId?: string;
+}

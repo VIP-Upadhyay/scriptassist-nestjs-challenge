@@ -1,108 +1,84 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, Query, HttpException, HttpStatus, UseInterceptors } from '@nestjs/common';
+import { 
+  Controller, 
+  Get, 
+  Post, 
+  Body, 
+  Patch, 
+  Param, 
+  Delete, 
+  UseGuards, 
+  Query, 
+  HttpException, 
+  HttpStatus,
+  ParseUUIDPipe,
+  HttpCode
+} from '@nestjs/common';
 import { TasksService } from './tasks.service';
 import { CreateTaskDto } from './dto/create-task.dto';
 import { UpdateTaskDto } from './dto/update-task.dto';
-import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { Task } from './entities/task.entity';
-import { TaskStatus } from './enums/task-status.enum';
-import { TaskPriority } from './enums/task-priority.enum';
+import { TaskFilterDto } from './dto/task-filter.dto';
+import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags, ApiResponse } from '@nestjs/swagger';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard'; // FIXED: Import real guard
 import { RateLimitGuard } from '../../common/guards/rate-limit.guard';
 import { RateLimit } from '../../common/decorators/rate-limit.decorator';
-
-// This guard needs to be implemented or imported from the correct location
-// We're intentionally leaving it as a non-working placeholder
-class JwtAuthGuard {}
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
 
 @ApiTags('tasks')
 @Controller('tasks')
-@UseGuards(JwtAuthGuard, RateLimitGuard)
+@UseGuards(JwtAuthGuard, RateLimitGuard) // FIXED: Using real JWT guard
 @RateLimit({ limit: 100, windowMs: 60000 })
 @ApiBearerAuth()
 export class TasksController {
   constructor(
     private readonly tasksService: TasksService,
-    // Anti-pattern: Controller directly accessing repository
-    @InjectRepository(Task)
-    private taskRepository: Repository<Task>
+    // FIXED: Removed direct repository injection - proper architecture
   ) {}
 
   @Post()
   @ApiOperation({ summary: 'Create a new task' })
-  create(@Body() createTaskDto: CreateTaskDto) {
-    return this.tasksService.create(createTaskDto);
+  @ApiResponse({ status: 201, description: 'Task created successfully' })
+  create(
+    @Body() createTaskDto: CreateTaskDto,
+    @CurrentUser() user: any
+  ) {
+    // FIXED: Add user context to task creation
+    return this.tasksService.create({ ...createTaskDto, userId: user.id });
   }
 
   @Get()
-  @ApiOperation({ summary: 'Find all tasks with optional filtering' })
+  @ApiOperation({ summary: 'Find all tasks with filtering and pagination' })
   @ApiQuery({ name: 'status', required: false })
   @ApiQuery({ name: 'priority', required: false })
-  @ApiQuery({ name: 'page', required: false })
-  @ApiQuery({ name: 'limit', required: false })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'limit', required: false, type: Number })
+  @ApiQuery({ name: 'search', required: false })
   async findAll(
-    @Query('status') status?: string,
-    @Query('priority') priority?: string,
-    @Query('page') page?: number,
-    @Query('limit') limit?: number,
+    @Query() filterDto: TaskFilterDto,
+    @CurrentUser() user: any
   ) {
-    // Inefficient approach: Inconsistent pagination handling
-    if (page && !limit) {
-      limit = 10; // Default limit
-    }
-    
-    // Inefficient processing: Manual filtering instead of using repository
-    let tasks = await this.tasksService.findAll();
-    
-    // Inefficient filtering: In-memory filtering instead of database filtering
-    if (status) {
-      tasks = tasks.filter(task => task.status === status as TaskStatus);
-    }
-    
-    if (priority) {
-      tasks = tasks.filter(task => task.priority === priority as TaskPriority);
-    }
-    
-    // Inefficient pagination: In-memory pagination
-    if (page && limit) {
-      const startIndex = (page - 1) * limit;
-      const endIndex = page * limit;
-      tasks = tasks.slice(startIndex, endIndex);
-    }
-    
-    return {
-      data: tasks,
-      count: tasks.length,
-      // Missing metadata for proper pagination
-    };
+    // FIXED: Use service method with proper filtering and pagination
+    return this.tasksService.findAllWithFilters(filterDto, user);
   }
 
   @Get('stats')
   @ApiOperation({ summary: 'Get task statistics' })
-  async getStats() {
-    // Inefficient approach: N+1 query problem
-    const tasks = await this.taskRepository.find();
-    
-    // Inefficient computation: Should be done with SQL aggregation
-    const statistics = {
-      total: tasks.length,
-      completed: tasks.filter(t => t.status === TaskStatus.COMPLETED).length,
-      inProgress: tasks.filter(t => t.status === TaskStatus.IN_PROGRESS).length,
-      pending: tasks.filter(t => t.status === TaskStatus.PENDING).length,
-      highPriority: tasks.filter(t => t.priority === TaskPriority.HIGH).length,
-    };
-    
-    return statistics;
+  async getStats(@CurrentUser() user: any) {
+    // FIXED: Use service method for efficient statistics
+    return this.tasksService.getStatistics(user);
   }
 
   @Get(':id')
   @ApiOperation({ summary: 'Find a task by ID' })
-  async findOne(@Param('id') id: string) {
-    const task = await this.tasksService.findOne(id);
+  @ApiResponse({ status: 404, description: 'Task not found' })
+  async findOne(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: any
+  ) {
+    // FIXED: Proper error handling without exposing internal details
+    const task = await this.tasksService.findOne(id, user);
     
     if (!task) {
-      // Inefficient error handling: Revealing internal details
-      throw new HttpException(`Task with ID ${id} not found in the database`, HttpStatus.NOT_FOUND);
+      throw new HttpException('Task not found', HttpStatus.NOT_FOUND);
     }
     
     return task;
@@ -110,53 +86,37 @@ export class TasksController {
 
   @Patch(':id')
   @ApiOperation({ summary: 'Update a task' })
-  update(@Param('id') id: string, @Body() updateTaskDto: UpdateTaskDto) {
-    // No validation if task exists before update
-    return this.tasksService.update(id, updateTaskDto);
+  @ApiResponse({ status: 404, description: 'Task not found' })
+  update(
+    @Param('id', ParseUUIDPipe) id: string, 
+    @Body() updateTaskDto: UpdateTaskDto,
+    @CurrentUser() user: any
+  ) {
+    // FIXED: Add user context for authorization
+    return this.tasksService.update(id, updateTaskDto, user);
   }
 
   @Delete(':id')
   @ApiOperation({ summary: 'Delete a task' })
-  remove(@Param('id') id: string) {
-    // No validation if task exists before removal
-    // No status code returned for success
-    return this.tasksService.remove(id);
+  @ApiResponse({ status: 204, description: 'Task deleted successfully' })
+  @ApiResponse({ status: 404, description: 'Task not found' })
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async remove(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: any
+  ) {
+    // FIXED: Proper status code and user context
+    await this.tasksService.remove(id, user);
   }
 
   @Post('batch')
   @ApiOperation({ summary: 'Batch process multiple tasks' })
-  async batchProcess(@Body() operations: { tasks: string[], action: string }) {
-    // Inefficient batch processing: Sequential processing instead of bulk operations
-    const { tasks: taskIds, action } = operations;
-    const results = [];
-    
-    // N+1 query problem: Processing tasks one by one
-    for (const taskId of taskIds) {
-      try {
-        let result;
-        
-        switch (action) {
-          case 'complete':
-            result = await this.tasksService.update(taskId, { status: TaskStatus.COMPLETED });
-            break;
-          case 'delete':
-            result = await this.tasksService.remove(taskId);
-            break;
-          default:
-            throw new HttpException(`Unknown action: ${action}`, HttpStatus.BAD_REQUEST);
-        }
-        
-        results.push({ taskId, success: true, result });
-      } catch (error) {
-        // Inconsistent error handling
-        results.push({ 
-          taskId, 
-          success: false, 
-          error: error instanceof Error ? error.message : 'Unknown error'
-        });
-      }
-    }
-    
-    return results;
+  @ApiResponse({ status: 200, description: 'Batch operation completed' })
+  async batchProcess(
+    @Body() operations: { taskIds: string[], action: string },
+    @CurrentUser() user: any
+  ) {
+    // FIXED: Use service method for efficient bulk operations
+    return this.tasksService.batchProcess(operations, user);
   }
-} 
+}

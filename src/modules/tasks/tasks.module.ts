@@ -4,6 +4,7 @@ import { BullModule } from '@nestjs/bullmq';
 import { TasksService } from './tasks.service';
 import { TasksController } from './tasks.controller';
 import { Task } from './entities/task.entity';
+import { AuthModule } from '../auth/auth.module';
 
 @Module({
   imports: [
@@ -11,6 +12,7 @@ import { Task } from './entities/task.entity';
     BullModule.registerQueue({
       name: 'task-processing',
     }),
+    AuthModule, // Import AuthModule to use JwtAuthGuard
   ],
   controllers: [TasksController],
   providers: [TasksService],
