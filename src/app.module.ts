@@ -2,15 +2,15 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { BullModule } from '@nestjs/bullmq';
-import { ThrottlerModule } from '@nestjs/throttler';
+// import { ThrottlerModule } from '@nestjs/throttler';
 import { ScheduleModule } from '@nestjs/schedule';
 import { UsersModule } from './modules/users/users.module';
 import { TasksModule } from './modules/tasks/tasks.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { TaskProcessorModule } from './queues/task-processor/task-processor.module';
 import { ScheduledTasksModule } from './queues/scheduled-tasks/scheduled-tasks.module';
-import { CacheService } from './common/services/cache.service';
 import { CacheModule } from './common/modules/cache.module'; // FIXED: Use proper cache module
+import { RateLimitModule } from '@common/modules/rate-limit.module';
 
 
 // Import the config files
@@ -59,17 +59,19 @@ import bullConfig from './config/bull.config';
     }),
     
     // Rate limiting
-    ThrottlerModule.forRootAsync({
-      imports: [ConfigModule],
-      inject: [ConfigService],
-      useFactory: (configService: ConfigService) => ([
-        {
-          ttl: 60,
-          limit: 10,
-        },
-      ]),
-    }),
-    
+    // ThrottlerModule.forRootAsync({
+    //   imports: [ConfigModule],
+    //   inject: [ConfigService],
+    //   useFactory: (configService: ConfigService) => ([
+    //     {
+    //       ttl: 60,
+    //       limit: 10,
+    //     },
+    //   ]),
+    // }),
+
+    // ADD NEW RATE LIMITING MODULE:
+    RateLimitModule,
 
     // FIXED: Proper cache module instead of direct service
     CacheModule,
@@ -83,5 +85,6 @@ import bullConfig from './config/bull.config';
     ScheduledTasksModule,
   ],
   // FIXED: Removed global cache service - now handled by CacheModule
+  
 })
 export class AppModule {}
