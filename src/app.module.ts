@@ -57,6 +57,28 @@ import bullConfig from './config/bull.config';
         settings: configService.get('bull.settings'),
       }),
     }),
+
+     // Register individual queues
+    BullModule.registerQueueAsync({
+      name: 'task-processing',
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService) => ({
+        connection: configService.get('bull.connection'),
+        defaultJobOptions: configService.get('bull.queues.task-processing.defaultJobOptions'),
+        settings: configService.get('bull.queues.task-processing.settings'),
+      }),
+    }),
+    
+    BullModule.registerQueueAsync({
+      name: 'dead-letter-queue',
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService) => ({
+        connection: configService.get('bull.deadLetterQueue.connection'),
+        defaultJobOptions: configService.get('bull.deadLetterQueue.defaultJobOptions'),
+      }),
+    }),
     
     // Rate limiting
     // ThrottlerModule.forRootAsync({
