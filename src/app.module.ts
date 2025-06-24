@@ -10,6 +10,8 @@ import { AuthModule } from './modules/auth/auth.module';
 import { TaskProcessorModule } from './queues/task-processor/task-processor.module';
 import { ScheduledTasksModule } from './queues/scheduled-tasks/scheduled-tasks.module';
 import { CacheService } from './common/services/cache.service';
+import { CacheModule } from './common/modules/cache.module'; // FIXED: Use proper cache module
+
 
 // Import the config files
 import databaseConfig from './config/database.config';
@@ -45,15 +47,14 @@ import bullConfig from './config/bull.config';
     // Scheduling
     ScheduleModule.forRoot(),
     
-    // Queue
+    // Queue - OPTIMIZED: Use enhanced Bull config
     BullModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => ({
-        connection: {
-          host: configService.get('REDIS_HOST'),
-          port: configService.get('REDIS_PORT'),
-        },
+        connection: configService.get('bull.connection'),
+        defaultJobOptions: configService.get('bull.defaultJobOptions'),
+        settings: configService.get('bull.settings'),
       }),
     }),
     
@@ -69,6 +70,9 @@ import bullConfig from './config/bull.config';
       ]),
     }),
     
+
+    // FIXED: Proper cache module instead of direct service
+    CacheModule,
     // Feature modules
     UsersModule,
     TasksModule,
@@ -78,15 +82,6 @@ import bullConfig from './config/bull.config';
     TaskProcessorModule,
     ScheduledTasksModule,
   ],
-  providers: [
-    // Inefficient: Global cache service with no configuration options
-    // This creates a single in-memory cache instance shared across all modules
-    CacheService
-  ],
-  exports: [
-    // Exporting the cache service makes it available to other modules
-    // but creates tight coupling
-    CacheService
-  ]
+  // FIXED: Removed global cache service - now handled by CacheModule
 })
 export class AppModule {}

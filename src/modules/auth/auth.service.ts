@@ -17,6 +17,7 @@ import * as crypto from 'crypto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { RefreshToken } from './entities/refresh-token.entity';
+import { getErrorMessage } from '@common/utils/error.util';
 
 export interface TokenPair {
   access_token: string;
@@ -50,13 +51,7 @@ export class AuthService {
     private refreshTokenRepository: Repository<RefreshToken>,
   ) {}
 
-  // Helper method for error handling
-  private getErrorMessage(error: unknown): string {
-    if (error instanceof Error) {
-      return error.message;
-    }
-    return 'Unknown error occurred';
-  }
+
 
   async login(loginDto: LoginDto, userAgent?: string, ipAddress?: string): Promise<AuthResponse> {
     const { email, password } = loginDto;
@@ -106,7 +101,7 @@ export class AuthService {
       if (error instanceof UnauthorizedException) {
         throw error;
       }
-      this.logger.error(`Login error: ${this.getErrorMessage(error)}`);
+      this.logger.error(`Login error: ${getErrorMessage(error)}`);
       throw new UnauthorizedException('Authentication failed');
     }
   }
@@ -151,7 +146,7 @@ export class AuthService {
       if (error instanceof BadRequestException) {
         throw error;
       }
-      this.logger.error(`Registration error: ${this.getErrorMessage(error)}`);
+      this.logger.error(`Registration error: ${getErrorMessage(error)}`);
       throw new BadRequestException('Registration failed');
     }
   }
@@ -204,7 +199,7 @@ export class AuthService {
       if (error instanceof UnauthorizedException) {
         throw error;
       }
-      this.logger.error(`Token refresh error: ${this.getErrorMessage(error)}`);
+      this.logger.error(`Token refresh error: ${getErrorMessage(error)}`);
       throw new UnauthorizedException('Token refresh failed');
     }
   }
@@ -220,7 +215,7 @@ export class AuthService {
         this.logger.log(`User logged out, token revoked: ${storedToken.id}`);
       }
     } catch (error) {
-      this.logger.error(`Logout error: ${this.getErrorMessage(error)}`);
+      this.logger.error(`Logout error: ${getErrorMessage(error)}`);
       // Don't throw error for logout failures
     }
   }
@@ -230,7 +225,7 @@ export class AuthService {
       await this.refreshTokenRepository.delete({ user: { id: userId } });
       this.logger.log(`All devices logged out for user: ${userId}`);
     } catch (error) {
-      this.logger.error(`Logout all devices error: ${this.getErrorMessage(error)}`);
+      this.logger.error(`Logout all devices error: ${getErrorMessage(error)}`);
       throw new BadRequestException('Failed to logout all devices');
     }
   }
@@ -255,7 +250,7 @@ export class AuthService {
         role: user.role,
       };
     } catch (error) {
-      this.logger.error(`User validation error: ${this.getErrorMessage(error)}`);
+      this.logger.error(`User validation error: ${getErrorMessage(error)}`);
       return null;
     }
   }
@@ -278,7 +273,7 @@ export class AuthService {
 
       return hasRequiredRole;
     } catch (error) {
-      this.logger.error(`Role validation error: ${this.getErrorMessage(error)}`);
+      this.logger.error(`Role validation error: ${getErrorMessage(error)}`);
       return false;
     }
   }

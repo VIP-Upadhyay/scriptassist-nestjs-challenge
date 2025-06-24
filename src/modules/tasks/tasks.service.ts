@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, ForbiddenException, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource, In } from 'typeorm';
 import { Task } from './entities/task.entity';
@@ -9,6 +9,8 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { TaskStatus } from './enums/task-status.enum';
 import { TaskPriority } from './enums/task-priority.enum';
+import { CacheService } from '../../common/services/cache.service';
+import { getErrorMessage } from '@common/utils/error.util';
 
 export interface PaginatedResult<T> {
   data: T[];
@@ -38,41 +40,44 @@ export class TasksService {
     private tasksRepository: Repository<Task>,
     @InjectQueue('task-processing')
     private taskQueue: Queue,
-    private dataSource: DataSource, // For transactions
+    private dataSource: DataSource,
+    private cacheService: CacheService,
   ) {}
 
   async create(createTaskDto: CreateTaskDto): Promise<Task> {
-    // FIXED: Use proper transaction for atomicity
     return this.dataSource.transaction(async manager => {
       try {
         const task = manager.create(Task, createTaskDto);
         const savedTask = await manager.save(task);
 
-        // FIXED: Add to queue with proper error handling
-        await this.taskQueue.add(
-          'task-created',
-          {
-            taskId: savedTask.id,
-            userId: savedTask.userId,
-            status: savedTask.status,
-          },
-          {
-            attempts: 3,
-            backoff: {
-              type: 'exponential',
-              delay: 2000,
+        // Invalidate user's cache after task creation
+        await this.invalidateUserCache(savedTask.userId, 'task created');
+
+        // Add to queue with proper error handling
+        try {
+          await this.taskQueue.add(
+            'task-created',
+            {
+              taskId: savedTask.id,
+              userId: savedTask.userId,
+              status: savedTask.status,
             },
-          }
-        );
+            {
+              attempts: 3,
+              backoff: {
+                type: 'exponential',
+                delay: 2000,
+              },
+            }
+          );
+        } catch (queueError) {
+          this.logger.warn(`Failed to add task to queue: ${getErrorMessage(queueError)}`);
+        }
 
         this.logger.log(`Task created: ${savedTask.id}`);
         return savedTask;
       } catch (error) {
-        let message = 'Unknown error';
-        if (error instanceof Error) {
-          message = error.message;
-        }  
-        this.logger.error(`Failed to create task: ${message}`);
+        this.logger.error(`Failed to create task: ${getErrorMessage(error)}`);
         throw error;
       }
     });
@@ -82,15 +87,28 @@ export class TasksService {
     filterDto: TaskFilterDto,
     user: any
   ): Promise<PaginatedResult<Task>> {
-    // FIXED: Efficient database filtering and pagination
     const { page = 1, limit = 10, status, priority, search, sortBy = 'createdAt', sortOrder = 'DESC' } = filterDto;
+    
+    // Create cache key based on filters
+    const cacheKey = `tasks:${user.id}:${JSON.stringify(filterDto)}`;
+    
+    // Try cache first
+    const cached = await this.cacheService.get<PaginatedResult<Task>>(cacheKey, { 
+      namespace: 'tasks' 
+    });
+    
+    if (cached) {
+      this.logger.debug(`Task list cache hit for user: ${user.id}`);
+      return cached;
+    }
+
+    this.logger.debug(`Task list cache miss for user: ${user.id}`);
     
     const queryBuilder = this.tasksRepository
       .createQueryBuilder('task')
-      .leftJoinAndSelect('task.user', 'user') // FIXED: Efficient join instead of N+1
-      .where('task.userId = :userId', { userId: user.id }); // User can only see their tasks
+      .leftJoinAndSelect('task.user', 'user')
+      .where('task.userId = :userId', { userId: user.id });
 
-    // FIXED: Database-level filtering instead of in-memory
     if (status) {
       queryBuilder.andWhere('task.status = :status', { status });
     }
@@ -106,7 +124,6 @@ export class TasksService {
       );
     }
 
-    // FIXED: Proper sorting and pagination
     queryBuilder
       .orderBy(`task.${sortBy}`, sortOrder)
       .skip((page - 1) * limit)
@@ -114,7 +131,6 @@ export class TasksService {
 
     const [tasks, total] = await queryBuilder.getManyAndCount();
 
-    // FIXED: Don't expose password hashes in user data
     const sanitizedTasks = tasks.map(task => ({
       ...task,
       user: task.user ? {
@@ -125,17 +141,25 @@ export class TasksService {
       } : null,
     }));
 
-    return {
+    const result = {
       data: sanitizedTasks as Task[],
       total,
       page,
       limit,
       totalPages: Math.ceil(total / limit),
     };
+
+    // Cache for 2 minutes
+    await this.cacheService.set(cacheKey, result, {
+      ttl: 120,
+      namespace: 'tasks',
+    });
+
+    this.logger.debug(`Task list computed and cached for user: ${user.id}`);
+    return result;
   }
 
   async findOne(id: string, user: any): Promise<Task | null> {
-    // FIXED: Single efficient query with authorization
     const task = await this.tasksRepository
       .createQueryBuilder('task')
       .leftJoinAndSelect('task.user', 'user')
@@ -147,7 +171,6 @@ export class TasksService {
       return null;
     }
 
-    // FIXED: Don't expose password hash
     return {
       ...task,
       user: task.user ? {
@@ -160,9 +183,7 @@ export class TasksService {
   }
 
   async update(id: string, updateTaskDto: UpdateTaskDto, user: any): Promise<Task> {
-    // FIXED: Use transaction with proper authorization
     return this.dataSource.transaction(async manager => {
-      // Check if task exists and user owns it
       const task = await manager.findOne(Task, {
         where: { id, userId: user.id },
       });
@@ -172,8 +193,8 @@ export class TasksService {
       }
 
       const originalStatus = task.status;
+      const originalPriority = task.priority;
 
-      // FIXED: Efficient update using QueryBuilder
       await manager
         .createQueryBuilder()
         .update(Task)
@@ -184,27 +205,38 @@ export class TasksService {
         .where('id = :id', { id })
         .execute();
 
-      // Get updated task
       const updatedTask = await manager.findOne(Task, {
         where: { id },
         relations: ['user'],
       });
 
+      // Invalidate cache if important fields changed
+      const statusChanged = originalStatus !== updatedTask!.status;
+      const priorityChanged = originalPriority !== updatedTask!.priority;
+      
+      if (statusChanged || priorityChanged) {
+        await this.invalidateUserCache(user.id, 'task updated');
+      }
+
       // Add to queue if status changed
-      if (originalStatus !== updatedTask!.status) {
-        await this.taskQueue.add(
-          'task-status-updated',
-          {
-            taskId: updatedTask!.id,
-            oldStatus: originalStatus,
-            newStatus: updatedTask!.status,
-            userId: user.id,
-          },
-          {
-            attempts: 3,
-            backoff: { type: 'exponential', delay: 2000 },
-          }
-        );
+      if (statusChanged) {
+        try {
+          await this.taskQueue.add(
+            'task-status-updated',
+            {
+              taskId: updatedTask!.id,
+              oldStatus: originalStatus,
+              newStatus: updatedTask!.status,
+              userId: user.id,
+            },
+            {
+              attempts: 3,
+              backoff: { type: 'exponential', delay: 2000 },
+            }
+          );
+        } catch (queueError) {
+          this.logger.warn(`Failed to add status update to queue: ${getErrorMessage(queueError)}`);
+        }
       }
 
       this.logger.log(`Task updated: ${id}`);
@@ -213,7 +245,6 @@ export class TasksService {
   }
 
   async remove(id: string, user: any): Promise<void> {
-    // FIXED: Proper authorization and transaction
     return this.dataSource.transaction(async manager => {
       const task = await manager.findOne(Task, {
         where: { id, userId: user.id },
@@ -225,25 +256,28 @@ export class TasksService {
 
       await manager.remove(task);
 
-      // Add to queue for cleanup
-      await this.taskQueue.add(
-        'task-deleted',
-        {
-          taskId: id,
-          userId: user.id,
-        },
-        {
-          attempts: 2,
-          delay: 1000,
-        }
-      );
+      // Invalidate cache after deletion
+      await this.invalidateUserCache(user.id, 'task deleted');
 
       this.logger.log(`Task deleted: ${id}`);
     });
   }
 
   async getStatistics(user: any): Promise<TaskStatistics> {
-    // FIXED: Single efficient SQL query instead of N+1
+    const cacheKey = `stats:${user.id}`;
+    
+    // Try cache first
+    const cached = await this.cacheService.get<TaskStatistics>(cacheKey, { 
+      namespace: 'tasks' 
+    });
+    
+    if (cached) {
+      this.logger.debug(`Stats cache hit for user: ${user.id}`);
+      return cached;
+    }
+
+    this.logger.debug(`Stats cache miss - computing for user: ${user.id}`);
+    
     const result = await this.tasksRepository
       .createQueryBuilder('task')
       .select([
@@ -268,7 +302,7 @@ export class TasksService {
       })
       .getRawOne();
 
-    return {
+    const stats: TaskStatistics = {
       total: parseInt(result.total),
       completed: parseInt(result.completed),
       inProgress: parseInt(result.inProgress),
@@ -278,13 +312,21 @@ export class TasksService {
       mediumPriority: parseInt(result.mediumPriority),
       lowPriority: parseInt(result.lowPriority),
     };
+
+    // Cache for 5 minutes
+    await this.cacheService.set(cacheKey, stats, {
+      ttl: 300,
+      namespace: 'tasks',
+    });
+
+    this.logger.debug(`Stats computed and cached for user: ${user.id}`);
+    return stats;
   }
 
   async batchProcess(
     operations: { taskIds: string[], action: string },
     user: any
   ): Promise<{ success: number; failed: number; results: any[] }> {
-    // FIXED: Efficient bulk operations instead of N+1 queries
     const { taskIds, action } = operations;
     
     if (!taskIds || taskIds.length === 0) {
@@ -292,7 +334,6 @@ export class TasksService {
     }
 
     return this.dataSource.transaction(async manager => {
-      // Verify all tasks belong to the user
       const tasks = await manager.find(Task, {
         where: {
           id: In(taskIds),
@@ -305,9 +346,8 @@ export class TasksService {
 
       let successCount = 0;
       let failedCount = notFoundIds.length;
-      const results: { taskId: string; success: boolean; error?: any; action?: string; }[] = [];
+      const results: { taskId: string; success: boolean; error?: string; action?: string; }[] = [];
 
-      // Add failed results for not found tasks
       notFoundIds.forEach(id => {
         results.push({
           taskId: id,
@@ -320,7 +360,6 @@ export class TasksService {
         try {
           switch (action) {
             case 'complete':
-              // FIXED: Bulk update instead of individual updates
               await manager
                 .createQueryBuilder()
                 .update(Task)
@@ -338,7 +377,6 @@ export class TasksService {
               break;
 
             case 'delete':
-              // FIXED: Bulk delete
               await manager
                 .createQueryBuilder()
                 .delete()
@@ -363,36 +401,19 @@ export class TasksService {
               });
           }
 
-          // Add batch operation to queue for processing
+          // Invalidate cache after successful batch operations
           if (successCount > 0) {
-            await this.taskQueue.add(
-              'batch-operation-completed',
-              {
-                action,
-                taskIds: foundTaskIds,
-                userId: user.id,
-                successCount,
-              },
-              {
-                attempts: 2,
-                delay: 1000,
-              }
-            );
+            await this.invalidateUserCache(user.id, `batch ${action} operation`);
           }
 
         } catch (error) {
-          let message = 'Unknown error';
-          if (error instanceof Error) {
-            message = error.message;
-          }
-
-          this.logger.error(`Batch operation failed: ${message}`);
+          this.logger.error(`Batch operation failed: ${getErrorMessage(error)}`);
           failedCount += foundTaskIds.length;
           foundTaskIds.forEach(id => {
             results.push({
               taskId: id,
               success: false,
-              error: message,
+              error: getErrorMessage(error),
             });
           });
         }
@@ -408,18 +429,31 @@ export class TasksService {
     });
   }
 
-  // Legacy methods (keeping for backward compatibility but fixed)
+  // Helper method to invalidate all user caches
+  private async invalidateUserCache(userId: string, reason?: string): Promise<void> {
+    try {
+      // Invalidate stats cache
+      await this.cacheService.delete(`stats:${userId}`, { namespace: 'tasks' });
+      
+      // Invalidate all task list caches for this user
+      await this.cacheService.invalidatePattern(`tasks:${userId}:*`, 'tasks');
+      
+      this.logger.debug(`Cache invalidated for user: ${userId}${reason ? ` (${reason})` : ''}`);
+    } catch (error) {
+      this.logger.error(`Failed to invalidate cache for user ${userId}: ${getErrorMessage(error)}`);
+    }
+  }
+
+  // Legacy methods (keeping for backward compatibility)
   async findAll(): Promise<Task[]> {
-    // FIXED: This should not be used but keeping for compatibility
     this.logger.warn('Using deprecated findAll method - use findAllWithFilters instead');
     return this.tasksRepository.find({
       relations: ['user'],
-      take: 100, // Limit to prevent memory issues
+      take: 100,
     });
   }
 
   async findByStatus(status: TaskStatus): Promise<Task[]> {
-    // FIXED: Use proper repository methods instead of raw SQL
     return this.tasksRepository.find({
       where: { status },
       relations: ['user'],
@@ -427,7 +461,6 @@ export class TasksService {
   }
 
   async updateStatus(id: string, status: string): Promise<Task> {
-    // FIXED: Add proper error handling
     const task = await this.tasksRepository.findOne({
       where: { id },
       relations: ['user'],
@@ -438,6 +471,11 @@ export class TasksService {
     }
 
     task.status = status as TaskStatus;
-    return this.tasksRepository.save(task);
+    const updatedTask = await this.tasksRepository.save(task);
+    
+    // Invalidate cache
+    await this.invalidateUserCache(task.userId, 'status updated');
+    
+    return updatedTask;
   }
 }
